@@ -1,6 +1,9 @@
 ﻿using System;
+using System.Collections;
+using System.Collections.Generic;
 using System.Linq;
-
+using System.Reflection.Emit;
+using HarmonyLib;
 using UnityEngine;
 using Verse;
 
@@ -37,10 +40,10 @@ namespace FrameRateControl
                     harmony.Patch(target, postfix: new HarmonyLib.HarmonyMethod(postfix));
                 }
                 {
-                    var target = HarmonyLib.AccessTools.Method(typeof(TickManager), nameof(TickManager.DoSingleTick));
-                    var postfix = HarmonyLib.AccessTools.Method(typeof(FrameRateControlMod), nameof(SetWorstAllowedFPS));
+                    var target = HarmonyLib.AccessTools.Method(typeof(TickManager), nameof(TickManager.TickManagerUpdate));
+                    var transpiler = HarmonyLib.AccessTools.Method(typeof(FrameRateControlMod), nameof(TickManagerUpdate_Transpiler));
 
-                    harmony.Patch(target, postfix: new HarmonyLib.HarmonyMethod(postfix));
+                    harmony.Patch(target, transpiler: new HarmonyLib.HarmonyMethod(transpiler));
                 }
             };
 
@@ -66,15 +69,42 @@ namespace FrameRateControl
             }
         }
 
-        static void SetWorstAllowedFPS(ref float ___WorstAllowedFPS)
+        static float WorstAllowedFPS()
         {
-            if (Settings.throttle) {
-                ___WorstAllowedFPS = Settings.targetFrameRate;
-            } else {
-                ___WorstAllowedFPS = 22f;
+            if (Settings.throttle)
+            {
+                return 1000f / Settings.targetFrameRate; // 1.0-1.3 old code (float)clock.ElapsedMilliseconds > 1000f / WorstAllowedFPS). 1.3.3387 now field const!
             }
-
+            else
+            {
+                return 1000f / 22f;
+            }
         }
+
+        static IEnumerable<CodeInstruction> TickManagerUpdate_Transpiler(IEnumerable<CodeInstruction> instructions)
+        {
+            var allowedFps = HarmonyLib.AccessTools.Method(typeof(FrameRateControlMod), nameof(WorstAllowedFPS));
+            foreach (var ci in instructions)
+            {
+                if (ci.opcode == OpCodes.Ldc_R4 && (float) ci.operand == 45.4545441f) // 1000f / 22f(const)
+                {
+                    yield return new CodeInstruction(OpCodes.Call, allowedFps);
+                    Log.Message("FrameRateControl :: const field WorstAllowedFPS transpiled");
+                }
+                else yield return ci;
+            }
+        }
+
+        // old code 1.0-1.3.3326
+        //static void SetWorstAllowedFPS(ref float ___WorstAllowedFPS)
+        //{
+        //    if (Settings.throttle) {
+        //        ___WorstAllowedFPS = Settings.targetFrameRate;
+        //    } else {
+        //        ___WorstAllowedFPS = 22f;
+        //    }
+
+        //}
 
         public override string SettingsCategory() => "Frame Rate Control";
         public override void DoSettingsWindowContents(Rect inRect) => Settings.DoSettingsWindowContents(inRect);
